@@ -484,9 +484,14 @@ class RemoteIKernel(object):
             host = self.host.replace(':', ' -p ')
         else:
             host = self.host
+        
+        if self.launch_args:
+            launch_args = self.launch_args
+        else:
+            launch_args = ''
 
-        pexpect.spawn('{pre} ssh -o StrictHostKeyChecking=no '
-                      '{host}'.format(pre=pre, host=host).strip(),
+        pexpect.spawn('{pre} ssh -o StrictHostKeyChecking=no {args}'
+                      '{host}'.format(pre=pre, args=launch_args, host=host).strip(),
                       logfile=self.log).sendline('exit')
 
         # connection info should have the ports being used
@@ -582,9 +587,14 @@ class RemoteIKernel(object):
         """Return the ssh command to tunnel through the middle hosts."""
         if self.tunnel_hosts is None:
             return None
+        
+        if self.launch_args:
+            launch_args = self.launch_args
+        else:
+            launch_args = ''
 
         cmd = []
-        ssh = 'ssh -o StrictHostKeyChecking=no'
+        ssh = 'ssh -o StrictHostKeyChecking=no {args}'.format(args=launch_args)
 
         for host in self.tunnel_hosts:
             if ':' in host:
@@ -607,6 +617,11 @@ class RemoteIKernel(object):
 
         ssh = 'ssh'
 
+        if self.launch_args:
+            launch_args = self.launch_args
+        else:
+            launch_args = ''
+
         # Add all the gateway machines as an ssh chain
         pre_ssh = []
         for pre_host in self.tunnel_hosts or []:
@@ -614,8 +629,8 @@ class RemoteIKernel(object):
                 pre_host = pre_host.replace(':', ' -p ')
 
             pre_ssh.append(
-                "{ssh} {ports_str} {pre_host}".format(
-                    ssh=ssh, pre_host=pre_host, ports_str=ports_str))
+                "{ssh} {args} {ports_str} {pre_host}".format(
+                    ssh=ssh, args=launch_args, pre_host=pre_host, ports_str=ports_str))
 
         if ':' in self.host:
             host = self.host.replace(":", " -p ")
@@ -626,8 +641,8 @@ class RemoteIKernel(object):
         # interval
         # .strip() to prevent leading spaces
         tunnel_cmd = ((" ".join(pre_ssh) + " " +
-                       "{ssh} {ports_str} {host} sleep 600".format(
-                           ssh=ssh, host=host, ports_str=ports_str)).strip())
+                       "{ssh} {args} {ports_str} {host} sleep 600".format(
+                           ssh=ssh, args=launch_args, host=host, ports_str=ports_str)).strip())
 
         self.log.debug("Tunnel command: {0}".format(tunnel_cmd))
         return tunnel_cmd

@@ -19,7 +19,14 @@ different python implementations.
 
 Install with ``pip install remote_ikernel``. Requires ``notebook`` (as part
 of Jupyter), version 4.0 or greater and ``pexpect``. Passwordless ``ssh``
-to the all the remote machines is also required (e.g. nodes on a cluster).
+to the all the remote machines is also recommended (e.g. nodes on a cluster).
+
+.. warning::
+
+   ``remote_ikernel`` opens multiple connections across several machines
+   to tunnel communication ports. If you have concerns about security or
+   excessive use of resources, please consult your systems administrator
+   before using this software.
 
 .. note::
 
@@ -27,15 +34,6 @@ to the all the remote machines is also required (e.g. nodes on a cluster).
    be saved onto the local filesystem, but the kernel will only have access
    to filesystem of the remote machine running the kernel. If you need shared
    directories, set up ``sshfs`` between your machines.
-
-.. note::
-
-   Version 0.3 and later of this package depend on the split Jupyter and
-   IPython versions when installing with pip. If you are upgrading
-   from an older version of IPython, Jupyter will probably migrate your
-   existing kernels (to ``~/.local/share/jupyter/kernels/``), but not
-   profiles. If you need to stick with IPython 3 series, use an older
-   version of ``remote_ikernel`` or install without using pip/setuptools.
 
 
 .. code:: shell
@@ -63,8 +61,8 @@ to the all the remote machines is also required (e.g. nodes on a cluster).
    # Add an SSH connection to a remote machine running IJulia
 
    remote_ikernel manage --add \
-      --kernel_cmd="/home/me/julia-79599ada44/bin/julia -i -F /home/me/.julia/v0.3/IJulia/src/kernel.jl {connection_file}" \
-      --name="IJulia 0.3.8" --interface=ssh \
+      --kernel_cmd="/home/me/julia-903644385b/bin/julia -i --startup-file=yes --color=yes /home/me/.julia/v0.6/IJulia/src/kernel.jl {connection_file}" \
+      --name="IJulia 0.6.0" --interface=ssh \
       --host=me@remote.machine --workdir='/home/me/Workdir' --language=julia
 
 .. code:: shell
@@ -78,7 +76,6 @@ to the all the remote machines is also required (e.g. nodes on a cluster).
 
 .. code:: shell
 
-   # NEW!!
    # Connect to a SLURM cluster through a gateway machine (to get into a
    # local network) and cluster frontend machine (where the sqsub runs from).
 
@@ -92,11 +89,27 @@ The kernel spec files will be installed so that the new kernel appears in
 the drop-down list in the notebook. ``remote_ikernel manage`` also has options
 to show and delete existing kernels.
 
-.. warning::
-   ``IJulia`` kernels don't seem to close properly, so you may have julia
-   processes lingering on your systems. To work around this edit the file
-   ``~/.julia/v0.3/IJulia/src/handlers.jl`` so that ``shutdown_request``
-   calls ``run(`kill $(getpid())`)`` instaed of ``exit()``.
+
+Connection multiplexing
+=======================
+
+When working with remote machines, each kernel creates two ``ssh``
+connections. If you would like to reduce that, you can set up automatic
+multiplexing of connections. For each machine, add a configuration to your
+``~/.ssh/config``:
+
+.. code::
+
+   Host myhost.ac.uk
+       ControlMaster auto
+       ControlPath ~/.ssh/%r@%h:%p
+       ControlPersist 1
+
+This will create a master connection that remains in the background when and
+multiplex everything through that. If you have multiple hops, this will need
+to be added for each hop. Note, for the security conscious, that idle kernels
+on multiplexed connections allow new ssh connections to be started without a
+password.
 
 
 Changes for v0.4
@@ -108,6 +121,10 @@ Changes for v0.4
   * Preliminary support for dealing with passwords. If a program is defined
     in the environment variable ``SSH_ASKPASS`` it will be used
     to ask the user for a password.
+  * ``--launch-cmd`` can be used to override the command used to launch the
+    interactive jobs on the cluster, e.g. to replace ``qlogin`` with ``qrsh``.
+  * Platform LSF support.
+  * The kernel json files are given unique names.
 
 Changes for v0.3
 ================

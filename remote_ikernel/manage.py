@@ -7,21 +7,45 @@ Run ``remote_ikernel manage`` to see a list of commands.
 """
 
 from __future__ import print_function
+from __future__ import unicode_literals
 
 import argparse
 import getpass
 import json
 import os
 import re
+import shlex
 import sys
 from os import path
 from subprocess import list2cmdline
 
 # How we identify kernels that rik will manage
-from remote_ikernel import RIK_PREFIX
+from remote_ikernel import RIK_PREFIX, __version__
 # These go through a compatibility layer to work with IPython and Jupyter
 from remote_ikernel.compat import kernelspec as ks
 from remote_ikernel.compat import tempdir
+
+# When Python 2 pipes into something else, there is no encoding
+# set. Assume that it is utf-8 so that scripttest works as expected.
+# If LANG=C, unicode characters will break output, but
+# https://bugs.python.org/issue19846 says it should not be an issue
+# on modern systems. And you can't put unicode in with LANG=C so how can
+# you expect unicode out?
+if sys.stdout.encoding is None:
+    # no recursive
+    _print = print
+
+    def print(x): _print(x.encode('UTF-8'))
+
+    # From http://bugs.python.org/issue9779
+    def _print_message(self, message, file=None):
+        """Output message to file, encoded as UTF-8 """
+        if message:
+            if file is None:
+                file = sys.stderr
+            file.write(message.encode('UTF-8'))
+
+    argparse.ArgumentParser._print_message = _print_message
 
 
 def delete_kernel(kernel_name):
@@ -47,6 +71,47 @@ def delete_kernel(kernel_name):
         pass
 
 
+def command_fix(kernel_command):
+    """
+    Check the command for anything that might cause upset when it gets run
+    by bash.
+
+    Current checks are:
+        IRkernel:main() needs escaping.
+        Warn for any brackets
+        Warn for unpaired quotes
+
+    Parameters
+    ----------
+    kernel_command : str
+        The kernel command that is run by bash.
+
+    Returns
+    -------
+    fixed_kernel_command : srt
+        The kernel command with any fixes applied.
+
+    """
+    # IRKernel:main() fix
+    # if not escaped or quoted then bash trips up on the brackets
+    if " IRkernel::main()" in kernel_command:
+        kernel_command = kernel_command.replace(" IRkernel::main()",
+                                                " 'IRkernel::main()'")
+        print("Escaping IRkernel::main().")
+
+    # Unescaped brackets
+    if (re.search(r"[^\\][()]", kernel_command) and not
+        re.search(r"[\'\"].*[^\\][()].*[\'\"]", kernel_command)):
+        print("Warning: possibly unescaped brackets in the kernel command.")
+
+    try:
+        shlex.split(kernel_command)
+    except ValueError:
+        print("Kernel command may be missing quotation marks.")
+
+    return kernel_command
+
+
 def show_kernel(kernel_name):
     """
     Print the contents of the kernel.json to the terminal, plus some extra
@@ -63,17 +128,20 @@ def show_kernel(kernel_name):
         kernel_json = json.load(kernel_file)
 
     # Manually format the json to put each key: value on a single line
-    print("  * Kernel found in: {0}".format(spec.resource_dir))
-    print("  * Name: {0}".format(spec.display_name))
-    print("  * Kernel command: {0}".format(list2cmdline(spec.argv)))
-    print("  * remote_ikernel command: {0}".format(list2cmdline(
+    print("['{}']".format(kernel_name))
+    print("|  * Kernel found in: {0}".format(spec.resource_dir))
+    print("|  * Name: {0}".format(spec.display_name))
+    print("|  * Kernel command: {0}".format(list2cmdline(spec.argv)))
+    print("|  * remote_ikernel command: {0}".format(list2cmdline(
         kernel_json['remote_ikernel_argv'])))
-    print("  * Raw json: {0}".format(json.dumps(kernel_json, indent=2)))
+    print("|  * Raw json: {0}".format(json.dumps(kernel_json, indent=2)))
+    print("")
 
 
 def add_kernel(interface, name, kernel_cmd, cpus=1, pe=None, language=None,
                system=False, workdir=None, host=None, precmd=None,
-               launch_args=None, tunnel_hosts=None, verbose=False):
+               launch_args=None, tunnel_hosts=None, verbose=False,
+               launch_cmd=None):
     """
     Add a kernel. Generates a kernel.json and installs it for the system or
     user.
@@ -94,6 +162,18 @@ def add_kernel(interface, name, kernel_cmd, cpus=1, pe=None, language=None,
         argv.extend(['--interface', 'sge'])
         kernel_name.append('sge')
         display_name.append("GridEngine")
+    elif interface == 'sge_qrsh':
+        argv.extend(['--interface', 'sge_qrsh'])
+        kernel_name.append('sge_qrsh')
+        display_name.append("GridEngine (qrsh)")
+    elif interface == 'slurm':
+        argv.extend(['--interface', 'slurm'])
+        kernel_name.append('slurm')
+        display_name.append("SLURM")
+    elif interface == 'lsf':
+        argv.extend(['--interface', 'lsf'])
+        kernel_name.append('lsf')
+        display_name.append("Platform LSF")
     elif interface == 'ssh':
         if host is None:
             raise KeyError('A host is required for ssh.')
@@ -103,15 +183,20 @@ def add_kernel(interface, name, kernel_cmd, cpus=1, pe=None, language=None,
         kernel_name.append(host)
         display_name.append("SSH")
         display_name.append(host)
-    elif interface == 'slurm':
-        argv.extend(['--interface', 'slurm'])
-        kernel_name.append('slurm')
-        display_name.append("SLURM")
+    elif interface is None:
+        raise ValueError("interface must be specified")
     else:
         raise ValueError("Unknown interface {0}".format(interface))
 
+    if name is None:
+        raise ValueError("name is required for kernel")
     display_name.append(name)
     kernel_name.append(re.sub(r'\W', '', name).lower())
+
+    if launch_cmd is not None:
+        argv.extend(['--launch-cmd', launch_cmd])
+        display_name.append('({0})'.format(launch_cmd))
+        kernel_name.append(re.sub(r'\W', '', launch_cmd).lower())
 
     if pe is not None:
         argv.extend(['--pe', pe])
@@ -142,6 +227,9 @@ def add_kernel(interface, name, kernel_cmd, cpus=1, pe=None, language=None,
         argv.extend(['--verbose'])
 
     # protect the {connection_file} part of the kernel command
+    if kernel_cmd is None:
+        raise ValueError("kernel_cmd is required")
+    kernel_cmd = command_fix(kernel_cmd)
     kernel_cmd = kernel_cmd.replace('{connection_file}',
                                     '{host_connection_file}')
     argv.extend(['--kernel_cmd', kernel_cmd])
@@ -182,7 +270,7 @@ def add_kernel(interface, name, kernel_cmd, cpus=1, pe=None, language=None,
         ks.install_kernel_spec(temp_dir, kernel_name,
                                user=username, replace=True)
 
-    return kernel_name
+    return kernel_name, " ".join(display_name)
 
 
 def manage():
@@ -210,12 +298,13 @@ def manage():
     parser = argparse.ArgumentParser(
         prog='%prog manage', description="\n".join(description),
         formatter_class=argparse.RawTextHelpFormatter)
-    parser.add_argument('--show', '-s', help="Print the contents of the "
-                        "kernel.")
+    parser.add_argument('--show', '-s', nargs='*', help="Print the contents "
+                        "of the "
+                        "kernel. Leave ")
     parser.add_argument('--add', '-a', action="store_true", help="Add a new "
                         "kernel according to other commandline options.")
-    parser.add_argument('--delete', '-d', help="Remove the kernel and delete "
-                        "the associated kernel.json.")
+    parser.add_argument('--delete', '-d', nargs='+', help="Remove the kernel "
+                        "and delete the associated kernel.json.")
     parser.add_argument('--kernel_cmd', '-k', help="Kernel command "
                         "to install.")
     parser.add_argument('--name', '-n', help="Name to identify the kernel,"
@@ -230,7 +319,8 @@ def manage():
                         "running through an SSH connection. For non standard "
                         "ports use host:port.")
     parser.add_argument('--interface', '-i',
-                        choices=['local', 'ssh', 'pbs', 'sge', 'slurm'],
+                        choices=['local', 'ssh', 'pbs', 'sge', 'sge_qrsh',
+                                 'slurm', 'lsf'],
                         help="Specify how the remote kernel is launched.")
     parser.add_argument('--system', help="Install the kernel into the system "
                         "directory so that it is available for all users. "
@@ -242,6 +332,10 @@ def manage():
     parser.add_argument('--remote-precmd', help="Command to execute on the "
                         "remote host before launching the kernel, but after "
                         "changing to the working directory.")
+    parser.add_argument('--launch-cmd', help="Override the command used to "
+                        "launch the remote session (e.g. 'qrsh' to replace "
+                        "'qlogin') or provide the full path for the "
+                        "executable if it is not in $PATH.")
     parser.add_argument('--remote-launch-args', help="Arguments to add to the "
                         "command that launches the remote session, i.e. the "
                         "ssh or qlogin command, such as '-l h_rt=24:00:00' to "
@@ -252,31 +346,54 @@ def manage():
                         "interface. For non standard ports use host:port.")
     parser.add_argument('--verbose', '-v', action='store_true', help="Running "
                         "kernel will produce verbose debugging on the console.")
+    parser.add_argument('--version', '-V', action='version',
+                        version='Remote Jupyter kernel manager '
+                        '(version {0}).'.format(__version__))
 
-    # Temporarily remove 'manage' from the arguments
-    raw_args = sys.argv[:]
-    sys.argv.remove('manage')
-    args = parser.parse_args()
-    sys.argv = raw_args
+    # Work on a copy so we don't mangle sys.argv when it is copied into
+    # the kernel json
+    raw_args = sys.argv[1:]
+    # give argparse something unicode to deal with for PY2
+    # otherwise, ignore if there is nothing to 'decode'
+    try:
+        raw_args = [x.decode('UTF-8') for x in sys.argv[1:]]
+    except AttributeError:
+        pass
+    # Remove 'manage' to parse manage specific options
+    raw_args.remove('manage')
+    args = parser.parse_args(raw_args)
 
     if args.add:
-        kernel_name = add_kernel(args.interface, args.name, args.kernel_cmd,
-                                 args.cpus, args.pe, args.language, args.system,
-                                 args.workdir, args.host, args.remote_precmd,
-                                 args.remote_launch_args, args.tunnel_hosts,
-                                 args.verbose)
-        print("Installed kernel {0}.".format(kernel_name))
+        kernel_name, display_name = add_kernel(
+                args.interface, args.name, args.kernel_cmd, args.cpus, args.pe,
+                args.language, args.system, args.workdir, args.host,
+                args.remote_precmd, args.remote_launch_args, args.tunnel_hosts,
+                args.verbose, args.launch_cmd)
+        print("Added kernel ['{0}']: {1}.".format(kernel_name, display_name))
     elif args.delete:
-        if args.delete in existing_kernels:
-            delete_kernel(args.delete)
-        else:
-            print("Can't delete {0}".format(args.delete))
+        undeleted = []
+        for to_delete in args.delete:
+            if to_delete in existing_kernels:
+                delete_kernel(to_delete)
+                print("Removed kernel ['{0}']: {1}.".format(
+                      to_delete, existing_kernels[to_delete].display_name))
+            else:
+                undeleted.append(to_delete)
+        if undeleted:
+            print("Can't delete: {0}.".format(", ".join(undeleted)))
             print("\n".join(description[2:]))
-    elif args.show:
-        if args.show in existing_kernels:
-            show_kernel(args.show)
-        else:
-            print("Kernel {0} doesn't exist".format(args.show))
+            raise SystemExit(1)
+    elif args.show is not None:
+        unshowable = []
+        # Show all if none are specified
+        for to_show in args.show or existing_kernels:
+            if to_show in existing_kernels:
+                show_kernel(to_show)
+            else:
+                unshowable.append(to_show)
+        if unshowable:
+            print("Could not find: {0}.".format(", ".join(unshowable)))
             print("\n".join(description[2:]))
+            raise SystemExit(1)
     else:
         parser.print_help()

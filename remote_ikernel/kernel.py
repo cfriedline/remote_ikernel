@@ -176,7 +176,7 @@ class RemoteIKernel(object):
     def __init__(self, connection_info=None, interface='sge', cpus=1, pe='smp',
                  kernel_cmd='ipython kernel', workdir=None, tunnel=True,
                  host=None, precmd=None, launch_args=None, verbose=False,
-                 tunnel_hosts=None, launch_cmd=None):
+                 tunnel_hosts=None, launch_cmd=None, kerneldir=None):
         """
         Initialise a kernel on a remote machine and start tunnels.
 
@@ -208,6 +208,8 @@ class RemoteIKernel(object):
         self.cwd = os.getcwd()  # Launch directory may be needed if no workdir
         # Assign the parent uuid, or generate a new one
         self.uuid = extract_uuid(connection_info) or uuid.uuid4()
+        # Directory where kernel files should be created on the host
+        self.kerneldir = kerneldir
 
         # Initiate an ssh tunnel through any tunnel hosts
         # this will start a pexpect, so we must check if
@@ -429,7 +431,11 @@ class RemoteIKernel(object):
         conn = self.connection
         # If the remote system has a different filesystem, a temporary
         # file is needed to hold the json.
-        kernel_name = './{0}kernel-{1}.json'.format(RIK_PREFIX, self.uuid)
+        kernel_name = '{0}kernel-{1}.json'.format(RIK_PREFIX, self.uuid)
+        if self.kerneldir:
+            kernel_name = os.path.join(self.kerneldir, kernel_name)
+        else:
+            kernel_name = './{0}'.format(kernel_name)
         self.log.info("Established connection; starting kernel.")
 
         # Use the specified working directory or try to change to the same
@@ -669,6 +675,7 @@ def start_remote_kernel():
     parser.add_argument('--verbose', action='store_true')
     parser.add_argument('--tunnel-hosts', nargs='+')
     parser.add_argument('--launch-cmd')
+    parser.add_argument('--kerneldir')
     parser.add_argument('--version', '-V', action='version', version="Remote "
                         "Jupyter kernel launcher (version {0}).\n\n"
                         "Use the '%(prog)s manage' subcommand for managing "
@@ -681,5 +688,5 @@ def start_remote_kernel():
                            host=args.host, precmd=args.precmd,
                            launch_args=args.launch_args, verbose=args.verbose,
                            tunnel_hosts=args.tunnel_hosts,
-                           launch_cmd=args.launch_cmd)
+                           launch_cmd=args.launch_cmd, kerneldir=args.kerneldir)
     kernel.keep_alive()

@@ -141,7 +141,7 @@ def show_kernel(kernel_name):
 def add_kernel(interface, name, kernel_cmd, cpus=1, pe=None, language=None,
                system=False, workdir=None, host=None, precmd=None,
                launch_args=None, tunnel_hosts=None, verbose=False,
-               launch_cmd=None):
+               launch_cmd=None, kerneldir=None):
     """
     Add a kernel. Generates a kernel.json and installs it for the system or
     user.
@@ -210,6 +210,9 @@ def add_kernel(interface, name, kernel_cmd, cpus=1, pe=None, language=None,
 
     if workdir is not None:
         argv.extend(['--workdir', workdir])
+    
+    if kerneldir is not None:
+        argv.extend(['--kerneldir', kerneldir])
 
     if precmd is not None:
         argv.extend(['--precmd', precmd])
@@ -259,6 +262,7 @@ def add_kernel(interface, name, kernel_cmd, cpus=1, pe=None, language=None,
         username = False
     else:
         username = getpass.getuser()
+
 
     # kernel.json file installation
     with tempdir.TemporaryDirectory() as temp_dir:
@@ -344,6 +348,11 @@ def manage():
                         "connection through the given ssh hosts before "
                         "starting the endpoint interface. Works with any "
                         "interface. For non standard ports use host:port.")
+    parser.add_argument('--kerneldir', help="Directory in which to create "
+                        "kernel.json files on the host. If not specified it "
+                        "will use the workdir (if specified) or the current "
+                        "directory (in that order). Please provide an absolute "
+                        "path.")
     parser.add_argument('--verbose', '-v', action='store_true', help="Running "
                         "kernel will produce verbose debugging on the console.")
     parser.add_argument('--version', '-V', action='version',
@@ -368,7 +377,7 @@ def manage():
                 args.interface, args.name, args.kernel_cmd, args.cpus, args.pe,
                 args.language, args.system, args.workdir, args.host,
                 args.remote_precmd, args.remote_launch_args, args.tunnel_hosts,
-                args.verbose, args.launch_cmd)
+                args.verbose, args.launch_cmd, args.kerneldir)
         print("Added kernel ['{0}']: {1}.".format(kernel_name, display_name))
     elif args.delete:
         undeleted = []

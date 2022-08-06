@@ -71,9 +71,10 @@ def show_kernel(kernel_name):
     print("  * Raw json: {0}".format(json.dumps(kernel_json, indent=2)))
 
 
-def add_kernel(interface, name, kernel_cmd, cpus=1, pe=None, language=None,
-               system=False, workdir=None, host=None, precmd=None,
-               launch_args=None, tunnel_hosts=None, verbose=False):
+def add_kernel(interface, name, kernel_cmd, cpus=1, mem=None, time=None,
+               pe=None, language=None, system=False, workdir=None, host=None,
+               precmd=None, launch_args=None, tunnel_hosts=None,
+               verbose=False):
     """
     Add a kernel. Generates a kernel.json and installs it for the system or
     user.
@@ -120,8 +121,18 @@ def add_kernel(interface, name, kernel_cmd, cpus=1, pe=None, language=None,
 
     if cpus and cpus > 1:
         argv.extend(['--cpus', '{0}'.format(cpus)])
-        kernel_name.append('{0}'.format(cpus))
+        kernel_name.append('{0}cpus'.format(cpus))
         display_name.append('{0} CPUs'.format(cpus))
+
+    if mem is not None:
+        argv.extend(['--mem', mem])
+        kernel_name.append(mem.lower())
+        display_name.append(mem)
+
+    if time is not None:
+        argv.extend(['--time', time])
+        kernel_name.append('t{0}'.format(re.sub(r'\W', '', time).lower()))
+        display_name.append(time)
 
     if workdir is not None:
         argv.extend(['--workdir', workdir])
@@ -225,7 +236,11 @@ def manage():
                         "language of the kernel.")
     parser.add_argument('--cpus', '-c', type=int, help="Launch the kernel "
                         "as a multi-core job with this many cores if > 1.")
-    parser.add_argument('--pe', help="Parallel environment to use on when"
+    parser.add_argument('--mem', '-m', help="Allocate specified "
+                        "amount of memory for your kernel job.")
+    parser.add_argument('--time', '-t', help="Allocate specified "
+                        "runtime for your kernel job.")
+    parser.add_argument('--pe', help="Parallel environment to use on when "
                         "running on gridengine.")
     parser.add_argument('--host', '-x', help="The hostname or ip address "
                         "running through an SSH connection. For non standard "
@@ -247,7 +262,7 @@ def manage():
                         "command that launches the remote session, i.e. the "
                         "ssh or qlogin command, such as '-l h_rt=24:00:00' to "
                         "limit job time on GridEngine jobs.")
-    parser.add_argument('--tunnel-hosts', '-t', nargs='+', help="Tunnel the "
+    parser.add_argument('--tunnel-hosts', '-u', nargs='+', help="Tunnel the "
                         "connection through the given ssh hosts before "
                         "starting the endpoint interface. Works with any "
                         "interface. For non standard ports use host:port.")
@@ -262,8 +277,9 @@ def manage():
 
     if args.add:
         kernel_name = add_kernel(args.interface, args.name, args.kernel_cmd,
-                                 args.cpus, args.pe, args.language, args.system,
-                                 args.workdir, args.host, args.remote_precmd,
+                                 args.cpus, args.mem, args.time, args.pe,
+                                 args.language, args.system, args.workdir,
+                                 args.host, args.remote_precmd,
                                  args.remote_launch_args, args.tunnel_hosts,
                                  args.verbose)
         print("Installed kernel {0}.".format(kernel_name))

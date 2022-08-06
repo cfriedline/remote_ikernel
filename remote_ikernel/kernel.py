@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 import time
 
 import pexpect
@@ -151,10 +152,10 @@ class RemoteIKernel(object):
 
     """
 
-    def __init__(self, connection_info=None, interface='sge', cpus=1, pe='smp',
-                 kernel_cmd='ipython kernel', workdir=None, tunnel=True,
-                 host=None, precmd=None, launch_args=None, verbose=False,
-                 tunnel_hosts=None):
+    def __init__(self, connection_info=None, interface='sge', cpus=1, mem=None,
+                 time=None, pe='smp', kernel_cmd='ipython kernel',
+                 workdir=None, tunnel=True, host=None, precmd=None,
+                 launch_args=None, verbose=False, tunnel_hosts=None):
         """
         Initialise a kernel on a remote machine and start tunnels.
 
@@ -167,6 +168,8 @@ class RemoteIKernel(object):
         self.connection_info = json.load(open(connection_info))
         self.interface = interface
         self.cpus = cpus
+        self.mem = mem
+        self.time = time
         self.pe = pe
         self.kernel_cmd = kernel_cmd
         self.host = host  # Name of node to be changed once connection is ready.
@@ -251,15 +254,22 @@ class RemoteIKernel(object):
         """
         self.log.info("Launching kernel through PBS/Torque.")
         job_name = 'remote_ikernel'
+        res = []
         if self.cpus > 1:
-            cpu_string = "-l ncpus={cpus}".format(cpus=self.cpus)
+            res.append('ncpus={cpus}'.format(cpus=self.cpus))
+        if self.mem is not None:
+            res.append('mem={mem}'.format(mem=self.mem))
+        if self.time is not None:
+            res.append('walltime={time}'.format(time=self.time))
+        if res:
+            res_string = '-l ' + ','.join(res)
         else:
-            cpu_string = ''
+            res_string = ''
         if self.launch_args:
             args_string = self.launch_args
         else:
             args_string = ''
-        pbs_cmd = 'qsub -I {0} -N {1} {2}'.format(cpu_string, job_name,
+        pbs_cmd = 'qsub -I {0} -N {1} {2}'.format(res_string, job_name,
                                                   args_string)
         self.log.debug("PBS command: '{0}'.".format(pbs_cmd))
         # Will wait in the queue for up to 10 mins
@@ -289,12 +299,22 @@ class RemoteIKernel(object):
             pe_string = "-pe {pe} {cpus}".format(pe=self.pe, cpus=self.cpus)
         else:
             pe_string = ''
+        res = []
+        if self.mem is not None:
+            res.append('h_vmem={mem}'.format(mem=self.mem))
+        if self.time is not None:
+            res.append('h_rt={time}'.format(time=self.time))
+        if res:
+            res_string = '-l ' + ','.join(res)
+        else:
+            res_string = ''
         if self.launch_args:
             args_string = self.launch_args
         else:
             args_string = ''
-        sge_cmd = 'qlogin -now n {0} -N {1} {2}'.format(pe_string, job_name,
-                                                        args_string)
+        sge_cmd = 'qlogin -now n {0} {3} -N {1} {2}'.format(pe_string, job_name,
+                                                            args_string,
+                                                            res_string)
         self.log.debug("Gridengine command: '{0}'.".format(sge_cmd))
         # Will wait in the queue for up to 10 mins
         qlogin = self._spawn(sge_cmd)
@@ -312,18 +332,21 @@ class RemoteIKernel(object):
         """
         self.log.info("Launching kernel through SLURM.")
         job_name = 'remote_ikernel'
+        opts = ''
         if self.cpus > 1:
-            tasks = "--cpus-per-task {cpus}".format(cpus=self.cpus)
-        else:
-            tasks = ""
+            opts += ' --cpus-per-task {cpus}'.format(cpus=self.cpus)
+        if self.mem is not None:
+            opts += ' --mem {mem}'.format(mem=self.mem)
+        if self.time is not None:
+            opts += ' --time {time}'.format(time=self.time)
         if self.launch_args:
             launch_args = self.launch_args
         else:
             launch_args = ''
         # -u disables buffering, -i is interactive, -v so we know the node
         # tasks must be before the bash!
-        srun_cmd = 'srun  {tasks} -J {job_name} {args} -v -u bash -i'.format(
-            tasks=tasks, job_name=job_name, args=launch_args)
+        srun_cmd = 'srun{opts} -J {job_name} {args} -v -u bash -i'.format(
+            opts=opts, job_name=job_name, args=launch_args)
         self.log.info("SLURM command: '{0}'.".format(srun_cmd))
         srun = self._spawn(srun_cmd)
         # Hopefully this text is universal?
@@ -547,9 +570,11 @@ def start_remote_kernel():
     parser.add_argument('connection_info')
     parser.add_argument('--interface', default='local')
     parser.add_argument('--cpus', type=int, default=1)
+    parser.add_argument('--mem')
+    parser.add_argument('--time')
     parser.add_argument('--pe', default='smp')
-    parser.add_argument('--kernel_cmd',
-                        default='ipython kernel -f {host_connection_file}')
+    parser.add_argument('--kernel_cmd', default=sys.executable
+                        + ' -m ipykernel_launcher -f {host_connection_file}')
     parser.add_argument('--workdir')
     parser.add_argument('--host')
     parser.add_argument('--precmd')
@@ -559,7 +584,8 @@ def start_remote_kernel():
     args = parser.parse_args()
 
     kernel = RemoteIKernel(connection_info=args.connection_info,
-                           interface=args.interface, cpus=args.cpus, pe=args.pe,
+                           interface=args.interface, cpus=args.cpus,
+                           mem=args.mem, time=args.time, pe=args.pe,
                            kernel_cmd=args.kernel_cmd, workdir=args.workdir,
                            host=args.host, precmd=args.precmd,
                            launch_args=args.launch_args, verbose=args.verbose,

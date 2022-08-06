@@ -98,6 +98,11 @@ to show and delete existing kernels.
    ``~/.julia/v0.3/IJulia/src/handlers.jl`` so that ``shutdown_request``
    calls ``run(`kill $(getpid())`)`` instaed of ``exit()``.
 
+Changes foe v0.5
+================
+
+  * Options ``--mem`` and ``--time`` to specify required resources for batch jobs.
+  * Bugfixes.
 
 Changes for v0.4
 ================

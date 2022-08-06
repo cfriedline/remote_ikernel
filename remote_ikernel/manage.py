@@ -142,9 +142,10 @@ def add_kernel(interface, name, kernel_cmd, cpus=1, pe=None, language=None,
         argv.extend(['--verbose'])
 
     # protect the {connection_file} part of the kernel command
-    kernel_cmd = kernel_cmd.replace('{connection_file}',
-                                    '{host_connection_file}')
-    argv.extend(['--kernel_cmd', kernel_cmd])
+    if kernel_cmd is not None:
+        kernel_cmd = kernel_cmd.replace('{connection_file}',
+                                        '{host_connection_file}')
+        argv.extend(['--kernel_cmd', kernel_cmd])
 
     # remote_ikernel needs the connection file too
     argv.append('{connection_file}')

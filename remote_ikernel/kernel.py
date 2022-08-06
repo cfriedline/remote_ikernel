@@ -24,6 +24,7 @@ from remote_ikernel import RIK_PREFIX, __version__
 # Where remote system has a different filesystem, a temporary file is needed
 # to hold the json.
 TEMP_KERNEL_NAME = './{0}kernel.json'.format(RIK_PREFIX)
+
 # ALl the ports that need to be forwarded
 PORT_NAMES = ['hb_port', 'shell_port', 'iopub_port', 'stdin_port',
               'control_port']
@@ -60,9 +61,6 @@ def _setup_logging(verbose):
 
         """
         message = args[0]
-        # convert bytes from pexpect to something that prints better
-        if hasattr(message, 'decode'):
-            message = message.decode('utf-8')
 
         for line in message.splitlines():
             if line.strip():
@@ -384,11 +382,12 @@ class RemoteIKernel(object):
         # to work seamlessly. (tunnels will have already done this)
         pre = self.tunnel_hosts_cmd or ''
         pexpect.spawn('{pre} ssh -o StrictHostKeyChecking=no '
-                      '{host}'.format(pre=pre, host=self.host).strip()).sendline('exit')
+                      '{host}'.format(pre=pre, host=self.host).strip(),
+                      encoding='utf-8').sendline('exit')
 
         # connection info should have the ports being used
         tunnel_command = self.tunnel_cmd.format(**self.connection_info)
-        tunnel = pexpect.spawn(tunnel_command)
+        tunnel = pexpect.spawn(tunnel_command, encoding='utf-8')
         check_password(tunnel)
 
         self.log.info("Setting up tunnels on ports: {0}.".format(
@@ -467,7 +466,7 @@ class RemoteIKernel(object):
         """
         if self.connection is None:
             self.connection = pexpect.spawn(command, timeout=timeout,
-                                            logfile=self.log)
+                                            logfile=self.log, encoding='utf-8')
         else:
             self.connection.sendline(command)
 
@@ -495,9 +494,6 @@ class RemoteIKernel(object):
     @property
     def tunnel_cmd(self):
         """Return a tunnelling command that just needs a port."""
-        # zmq needs str in Python 3, but pexpect gives bytes
-        if hasattr(self.host, 'decode'):
-            self.host = self.host.decode('utf-8')
 
         # One connection can tunnel all the ports
         ports_str = " ".join(["-L 127.0.0.1:{{{port}}}:127.0.0.1:{{{port}}}"

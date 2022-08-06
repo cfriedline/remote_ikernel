@@ -15,22 +15,14 @@ import re
 import subprocess
 import sys
 import time
+from tkinter import FALSE
+import uuid
 
 import pexpect
 
 from tornado.log import LogFormatter
 
 from remote_ikernel import RIK_PREFIX, __version__
-
-# Where remote system has a different filesystem, a temporary file is needed
-# to hold the json.
-try:
-    from jupyter_core.paths import jupyter_runtime_dir
-except ImportError:
-    TEMP_KERNEL_NAME = './{0}kernel.json'.format(RIK_PREFIX)
-else:
-    TEMP_KERNEL_NAME = '{1}/{0}kernel.json'.format(RIK_PREFIX,
-                                                   jupyter_runtime_dir())
 
 # ALl the ports that need to be forwarded
 PORT_NAMES = ['hb_port', 'shell_port', 'iopub_port', 'stdin_port',
@@ -145,6 +137,42 @@ def check_password(connection):
             return
 
 
+def get_uuid(filename):
+    """
+    Given a filename containing a kernel, extract the uuid in
+    the kernel name. If unsucessful, return new UUID
+    Parameters
+    ----------
+    filename : str
+        The name of the kernel-...-json file with the connection info.
+    Returns
+    -------
+    uuid : str or None
+        The extracted uuid, or None if not found.
+    """
+    if filename is not None:
+        extracted = re.match(
+            ".*kernel-([0-9a-f]{8}-?[0-9a-f]{4}-?4[0-9a-f]{3}-"
+            "?[89ab][0-9a-f]{3}-?[0-9a-f]{12}).json",
+            filename,
+        )
+        if extracted is not None:
+            return uuid.UUID(extracted.group(1))
+    return uuid.uuid4()
+
+
+def safe_eval(s):
+    if s.startswith('"') and s.endswith('"'):
+        return s[1:-1]
+    if s.startswith("'") and s.endswith("'"):
+        return s[1:-1]
+    if s.startswith('b"') and s.endswith('"'):
+        return s[2:-1]
+    if s.startswith("b'") and s.endswith("'"):
+        return s[2:-1]
+    return s
+
+
 class RemoteIKernel(object):
     """
     Configurable remote IPython kernel than runs on a node on a cluster
@@ -152,10 +180,11 @@ class RemoteIKernel(object):
 
     """
 
-    def __init__(self, connection_info=None, interface='sge', cpus=1, mem=None,
+    def __init__(self, connection_file=None, connection_info=None, interface='sge', cpus=1, mem=None,
                  time=None, pe='smp', kernel_cmd='ipython kernel',
                  workdir=None, tunnel=True, host=None, precmd=None,
-                 launch_args=None, verbose=False, tunnel_hosts=None):
+                 launch_args=None, verbose=False, tunnel_hosts=None,
+                 runtimedir=None, uuid=None):
         """
         Initialise a kernel on a remote machine and start tunnels.
 
@@ -165,7 +194,8 @@ class RemoteIKernel(object):
         self.log.info("Remote kernel version: {0}.".format(__version__))
         self.log.info("File location: {0}.".format(__file__))
         # The connection info is provided by the notebook
-        self.connection_info = json.load(open(connection_info))
+        self.connection_file = connection_file
+        self._delcf = False
         self.interface = interface
         self.cpus = cpus
         self.mem = mem
@@ -181,6 +211,31 @@ class RemoteIKernel(object):
         self.precmd = precmd
         self.launch_args = launch_args
         self.cwd = os.getcwd()  # Launch directory may be needed if no workdir
+        self.uuid = uuid
+        # Directory where kernel files should be created on the host
+        if runtimedir is None:
+            runtimedir = '~/.local/share/jupyter/runtime'
+        self.runtimedir = runtimedir
+
+        if connection_file is not None:
+            if os.path.exists(self.connection_file):
+                try:
+                    loaded_connection_info = json.load(open(connection_file))
+                    assert isinstance(connection_info, dict)
+                except Exception:
+                    loaded_connection_info = {}
+            else:
+                loaded_connection_info = {}
+                self._delcf = True
+            self.connection_info = loaded_connection_info.copy()
+            self.connection_info.update(connection_info)
+            if self._delcf or self.connection_info != loaded_connection_info:
+                try:
+                    json.dump(self.connection_info, open(connection_file, 'w'), indent=2)
+                except Exception:
+                    pass
+        else:
+            self.connection_info = connection_info
 
         # Initiate an ssh tunnel through any tunnel hosts
         # this will start a pexpect, so we must check if
@@ -206,6 +261,16 @@ class RemoteIKernel(object):
             self.start_kernel()
             if self.tunnel:
                 self.tunnel_connection()
+
+    def __del__(self):
+        """
+        Make final cleanups.
+        """
+        if self._delcf:
+            try:
+                os.remove(self.connection_file)
+            except Exception:
+                pass
 
     def launch_tunnel_hosts(self):
         """
@@ -372,12 +437,22 @@ class RemoteIKernel(object):
             self.log.info("Current working directory {0}.".format(self.cwd))
             conn.sendline('cd {0}'.format(self.cwd))
 
+        if '{host_connection_file}' in self.kernel_cmd:
+            kernel_name = "{0}kernel-{1}.json".format(RIK_PREFIX, self.uuid)
+            host_connection_file = os.path.join(self.runtimedir, kernel_name)
+
+        else:
+            host_connection_file = None
+
         # Create a temporary file to store a copy of the connection information
         # Delete the file if it already exists
-        conn.sendline('rm -f {0}'.format(TEMP_KERNEL_NAME))
-        file_contents = json.dumps(self.connection_info)
-        conn.sendline('echo \'{0}\' > {1}'.format(file_contents,
-                                                  TEMP_KERNEL_NAME))
+        if host_connection_file is not None:
+            connection_file_dir = os.path.dirname(host_connection_file)
+            conn.sendline('mkdir -p {}'.format(connection_file_dir))
+            conn.sendline('rm -f {0}'.format(host_connection_file))
+            file_contents = json.dumps(self.connection_info)
+            conn.sendline('echo \'{0}\' > {1}'
+                          .format(file_contents, host_connection_file))
 
         # Is this the best place for a pre-command? I guess people will just
         # have to deal with it. Pass it on as is.
@@ -385,19 +460,20 @@ class RemoteIKernel(object):
             conn.sendline(self.precmd)
 
         # Init as a background process so we can delete the tempfile after
-        kernel_init = '{kernel_cmd}'.format(kernel_cmd=self.kernel_cmd)
-        kernel_init = kernel_init.format(host_connection_file=TEMP_KERNEL_NAME,
-                                         ci=self.connection_info)
+        kernel_init = self.kernel_cmd.format(
+            host_connection_file=host_connection_file,
+            **self.connection_info)
         self.log.info("Running kernel command: '{0}'.".format(kernel_init))
         conn.sendline(kernel_init)
 
-        # The kernel blocks further commands, so queue deletion of the
-        # transient file for once the process stops. Trying to do this
-        # whilst simultaneously starting the kernel ended up deleting
-        # the file before it was read.
-        conn.sendline('rm -f {0}'.format(TEMP_KERNEL_NAME))
-        conn.sendline('exit')
+        if host_connection_file is not None:
+            # The kernel blocks further commands, so queue deletion of the
+            # transient file for once the process stops. Trying to do this
+            # whilst simultaneously starting the kernel ended up deleting
+            # the file before it was read.
+            conn.sendline('rm -f {0}'.format(host_connection_file))
 
+        conn.sendline('exit')
         # Could check this for errors?
         conn.expect('exit')
 
@@ -563,31 +639,57 @@ def start_remote_kernel():
     """
     Read command line arguments and initialise a kernel.
     """
+
     # These will not face a user since they are interpreting the command from
     # kernel the kernel.json
     description = "This is the kernel launcher, did you mean '%prog manage'"
     parser = argparse.ArgumentParser(description=description)
-    parser.add_argument('connection_info')
+    parser.add_argument('-f', '--f')
     parser.add_argument('--interface', default='local')
     parser.add_argument('--cpus', type=int, default=1)
     parser.add_argument('--mem')
     parser.add_argument('--time')
     parser.add_argument('--pe', default='smp')
-    parser.add_argument('--kernel_cmd', default=sys.executable
-                        + ' -m ipykernel_launcher -f {host_connection_file}')
+    parser.add_argument('--kernel_cmd', default=sys.executable +
+                        ' -m ipykernel_launcher -f {host_connection_file}')
     parser.add_argument('--workdir')
     parser.add_argument('--host')
     parser.add_argument('--precmd')
     parser.add_argument('--launch-args')
     parser.add_argument('--verbose', action='store_true')
     parser.add_argument('--tunnel-hosts', nargs='+')
+    parser.add_argument('--runtimedir')
+
+    for port in PORT_NAMES:
+        parser.add_argument('--{}'.format(port[:-5]), type=int, default=0)
+    parser.add_argument('--ip')
+    parser.add_argument('--signature_scheme', '--Session.signature_scheme')
+    parser.add_argument('--key', '--Session.key')
+    parser.add_argument('--transport')
+
     args = parser.parse_args()
 
-    kernel = RemoteIKernel(connection_info=args.connection_info,
+    connection_info = {}
+    for port in PORT_NAMES:
+        arg = getattr(args, port[:-5])
+        if args.hb:
+            connection_info[port] = arg
+    if args.ip:
+        connection_info['ip'] = args.ip
+    if args.signature_scheme:
+        connection_info['signature_scheme'] = safe_eval(args.signature_scheme)
+    if args.key:
+        connection_info['key'] = safe_eval(args.key)
+    if args.transport:
+        connection_info['transport'] = safe_eval(args.transport)
+
+    kernel = RemoteIKernel(connection_file=args.f,
+                           connection_info=connection_info,
                            interface=args.interface, cpus=args.cpus,
                            mem=args.mem, time=args.time, pe=args.pe,
                            kernel_cmd=args.kernel_cmd, workdir=args.workdir,
                            host=args.host, precmd=args.precmd,
                            launch_args=args.launch_args, verbose=args.verbose,
-                           tunnel_hosts=args.tunnel_hosts)
+                           tunnel_hosts=args.tunnel_hosts,
+                           runtimedir=args.runtimedir, uuid=get_uuid(args.f))
     kernel.keep_alive()

@@ -74,7 +74,7 @@ def show_kernel(kernel_name):
 def add_kernel(interface, name, kernel_cmd, cpus=1, mem=None, time=None,
                pe=None, language=None, system=False, workdir=None, host=None,
                precmd=None, launch_args=None, tunnel_hosts=None,
-               verbose=False):
+               verbose=False, runtimedir=None):
     """
     Add a kernel. Generates a kernel.json and installs it for the system or
     user.
@@ -137,17 +137,14 @@ def add_kernel(interface, name, kernel_cmd, cpus=1, mem=None, time=None,
     if workdir is not None:
         argv.extend(['--workdir', workdir])
 
+    if runtimedir is not None:
+        argv.extend(['--runtimedir', runtimedir])
+
     if precmd is not None:
         argv.extend(['--precmd', precmd])
 
     if launch_args is not None:
         argv.extend(['--launch-args', launch_args])
-
-    if tunnel_hosts:
-        # This will be a list of hosts
-        kernel_name.append('via_{0}'.format("_".join(tunnel_hosts)))
-        display_name.append("(via {0})".format(" ".join(tunnel_hosts)))
-        argv.extend(['--tunnel-hosts'] + tunnel_hosts)
 
     if verbose:
         argv.extend(['--verbose'])
@@ -158,8 +155,14 @@ def add_kernel(interface, name, kernel_cmd, cpus=1, mem=None, time=None,
                                         '{host_connection_file}')
         argv.extend(['--kernel_cmd', kernel_cmd])
 
+    if tunnel_hosts:
+        # This will be a list of hosts
+        kernel_name.append('via_{0}'.format("_".join(tunnel_hosts)))
+        display_name.append("(via {0})".format(" ".join(tunnel_hosts)))
+        argv.extend(['--tunnel-hosts'] + tunnel_hosts)
+
     # remote_ikernel needs the connection file too
-    argv.append('{connection_file}')
+    argv.extend(['-f', '{connection_file}'])
 
     # Prefix all kernels with 'rik_' for management.
     kernel_name = RIK_PREFIX + '_'.join(kernel_name)
@@ -213,7 +216,7 @@ def manage():
     for kernel_name in sorted(ks.find_kernel_specs()):
         if kernel_name.startswith(RIK_PREFIX):
             spec = ks.get_kernel_spec(kernel_name)
-            display = "  ['{kernel_name}']: {desc}".format(
+            display = "  {kernel_name} : {desc}".format(
                 kernel_name=kernel_name, desc=spec.display_name)
             existing_kernels[kernel_name] = spec
             description.append(display)
@@ -266,6 +269,10 @@ def manage():
                         "connection through the given ssh hosts before "
                         "starting the endpoint interface. Works with any "
                         "interface. For non standard ports use host:port.")
+    parser.add_argument('--runtimedir', help="Directory in which to create "
+                        "kernel.json files on the host. Please provide an "
+                        "absolute path. By default it is "
+                        "'~/.local/share/jupyter/runtimedir'.")
     parser.add_argument('--verbose', '-v', action='store_true', help="Running "
                         "kernel will produce verbose debugging on the console.")
 
@@ -281,7 +288,7 @@ def manage():
                                  args.language, args.system, args.workdir,
                                  args.host, args.remote_precmd,
                                  args.remote_launch_args, args.tunnel_hosts,
-                                 args.verbose)
+                                 args.verbose, args.runtimedir)
         print("Installed kernel {0}.".format(kernel_name))
     elif args.delete:
         if args.delete in existing_kernels:

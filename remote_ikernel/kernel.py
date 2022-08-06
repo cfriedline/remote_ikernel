@@ -23,7 +23,13 @@ from remote_ikernel import RIK_PREFIX, __version__
 
 # Where remote system has a different filesystem, a temporary file is needed
 # to hold the json.
-TEMP_KERNEL_NAME = './{0}kernel.json'.format(RIK_PREFIX)
+try:
+    from jupyter_core.paths import jupyter_runtime_dir
+except ImportError:
+    TEMP_KERNEL_NAME = './{0}kernel.json'.format(RIK_PREFIX)
+else:
+    TEMP_KERNEL_NAME = '{1}/{0}kernel.json'.format(RIK_PREFIX,
+                                                   jupyter_runtime_dir())
 
 # ALl the ports that need to be forwarded
 PORT_NAMES = ['hb_port', 'shell_port', 'iopub_port', 'stdin_port',

@@ -277,8 +277,9 @@ class RemoteIKernel(object):
         Build a chain of hosts to tunnel through and start an ssh
         chain with pexpect.
         """
-        # TODO: does this need to be more than several ssh commands?
-        self._spawn(self.tunnel_hosts_cmd)
+        tunnel_hosts_cmd = self.tunnel_hosts_cmd
+        self.log.debug("Tunnel proxy command: {0}.".format(tunnel_hosts_cmd))
+        self._spawn(tunnel_hosts_cmd)
         check_password(self.connection)
 
     def launch_local(self):
@@ -580,21 +581,22 @@ class RemoteIKernel(object):
     @property
     def tunnel_hosts_cmd(self):
         """Return the ssh command to tunnel through the middle hosts."""
-        if self.tunnel_hosts is None:
+        if not self.tunnel_hosts:
             return None
 
-        cmd = []
+        jumps = ','.join('{}'.format(host) for host in self.tunnel_hosts[:-1])
+        if jumps:
+            jumps = '-J ' + jumps
 
-        for host in self.tunnel_hosts:
-            if ':' in host:
-                host, port = host.split(":")
-                ssh = 'ssh -o StrictHostKeyChecking=no -p {0}'.format(port)
-            else:
-                ssh = 'ssh -o StrictHostKeyChecking=no'
+        host = self.tunnel_hosts[-1]
 
-            cmd.extend([ssh, host])
+        if ':' in host:
+            host, port = host.split(":")
+            ssh = 'ssh -o StrictHostKeyChecking=no {} -p {} {}'.format(jumps, port, host)
+        else:
+            ssh = 'ssh -o StrictHostKeyChecking=no {} {}'.format(jumps, host)
 
-        return " ".join(cmd)
+        return ssh
 
     @property
     def tunnel_cmd(self):
@@ -605,17 +607,10 @@ class RemoteIKernel(object):
                                "".format(port=port) for port in PORT_NAMES])
 
         # Add all the gateway machines as an ssh chain
-        pre_ssh = []
-        for pre_host in self.tunnel_hosts or []:
-            if ':' in pre_host:
-                # Split the host:port and insert into tunnel command
-                pre_ssh.append(
-                    "ssh -p {1} -S none {ports_str} {1}".format(
-                        pre_host.split(':'), ports_str=ports_str))
-            else:
-                pre_ssh.append(
-                    "ssh -S none {ports_str} {0}".format(
-                        pre_host, ports_str=ports_str))
+        if self.tunnel_hosts:
+            jumps = '-J ' + ','.join(host for host in self.tunnel_hosts)
+        else:
+            jumps = ''
 
         if ':' in self.host:
             host, host_port = self.host.split(":")
@@ -626,10 +621,9 @@ class RemoteIKernel(object):
 
         # Timeout is specified here, this should be longer than the checking
         # interval
-        # .strip() to prevent leading spaces
-        tunnel_cmd = ((" ".join(pre_ssh) + " " +
-                       "{ssh} -S none {ports_str} {host} sleep 600".format(
-                           ssh=ssh, host=host, ports_str=ports_str)).strip())
+        tunnel_cmd = ("{ssh} {jumps} -S none {ports_str} {host} sleep 600"
+                       .format(ssh=ssh, jumps=jumps, host=host,
+                               ports_str=ports_str))
 
         self.log.debug("Tunnel command: {0}".format(tunnel_cmd))
         return tunnel_cmd
